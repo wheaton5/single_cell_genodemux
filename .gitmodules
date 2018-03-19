@@ -1,0 +1,9 @@
+[submodule "lib/go/src/github.com/biogo/hts"]
+	path = lib/go/src/github.com/biogo/hts
+	url = git@github.com:wheaton5/hts.git
+[submodule "lib/go/src/brentp/bigly"]
+	path = lib/go/src/brentp/bigly
+	url = git@github.com:wheaton5/bigly.git
+[submodule "lib/go/src/github.com/brentp/bigly"]
+	path = lib/go/src/github.com/brentp/bigly
+	url = git@github.com:wheaton5/bigly.git
