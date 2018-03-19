@@ -1,0 +1,3 @@
+[submodule "lib/go/src/github.com/brentp/bigly"]
+	path = lib/go/src/github.com/brentp/bigly
+	url = git@github.com:wheaton5/bigly.git
