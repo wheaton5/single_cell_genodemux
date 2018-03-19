@@ -1,0 +1,111 @@
+filetype png;
+filetype bam;
+filetype tsv;
+filetype bed;
+filetype bed.gz;
+filetype txt;
+filetype fa;
+filetype vcf.gz;
+filetype fasta;
+filetype csv;
+filetype gtf;
+filetype sam;
+
+stage REFORMAT_BAM(
+    in bam bam,
+    in fasta fasta,
+    in csv cells,
+    out sam header,
+    out csv read_groups,
+    out bam bam,
+    out bam[] bams,
+    src py "stages/cell_read_group",
+) split using (
+    in string chrom,
+    in int start,
+    in int end,
+)
+
+stage SPLIT_N_READS(
+    in bam[] bams,
+    in fasta fasta,
+    in sam header,
+    out bam bam,
+    src py "stages/split_n_reads",
+) split using (
+    in bam bam,
+)
+
+stage CALL_VARIANTS(
+    in bam bam,
+    in fasta fasta,
+    in int ploidy,
+    in gtf gtf,
+    out vcf.gz vcf,
+    out bed bed,
+    src py "stages/call_variants",
+) split using (
+    in string chrom,
+    in int start,
+    in int end,
+)
+
+stage CLUSTER_GENOTYPES(
+    in vcf.gz vcf,
+    out tsv assignments,
+    src py "stages/cluster_genotypes",
+)
+
+pipeline CALL_AND_CLUSTER(
+    in bam bam,
+    in fasta fasta,
+    in int ploidy,
+    in gtf gtf,
+    out tsv assignments,
+)
+{
+    call CALL_VARIANTS(
+        bam = self.bam,
+        ploidy = self.ploidy,
+        fasta = self.fasta,
+        gtf = self.gtf,
+    )
+
+    call CLUSTER_GENOTYPES(
+        vcf = CALL_VARIANTS.vcf,
+    )
+
+    return (
+        assignments = CLUSTER_GENOTYPES.assignments,
+    )
+}
+
+
+pipeline CELL_MUX(
+    in bam bam,
+    in fasta fasta,
+    in csv cells,
+    in int ploidy,
+    in gtf gtf,
+    out tsv assignments,
+)
+{
+
+    call REFORMAT_BAM(
+        bam = self.bam,
+        fasta = self.fasta,
+        cells = self.cells,
+    )
+
+    call CALL_AND_CLUSTER(
+        fasta = self.fasta,
+        ploidy = self.ploidy,
+        gtf = self.gtf,
+        bam = REFORMAT_BAM.bam,
+    )
+
+    return (
+        assignments = CALL_AND_CLUSTER.assignments,
+    )
+}
+
