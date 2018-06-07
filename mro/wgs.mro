@@ -1,0 +1,35 @@
+filetype bam;
+filetype vcf.gz;
+filetype fq.gz;
+
+stage FREEBAYES_POP(
+    in bam[] bams,
+    in string fasta,
+    in int ploidy,
+    out vcf.gz vcf,
+    src py "stages/freebayes_pop",
+) split using (
+    in string chrom,
+    in int start,
+    in int stop,
+)
+
+
+
+pipeline FREEBAYES_POP_PIPE(
+    in bam[] bams,
+    in string fasta,
+    in int ploidy,
+    out vcf.gz vcf,
+)
+{
+    call FREEBAYES_POP(
+        bams = self.bams,
+        fasta = self.fasta,
+        ploidy = self.ploidy,
+    )
+
+    return(
+        vcf = FREEBAYES_POP.vcf,
+    )
+}

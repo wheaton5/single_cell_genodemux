@@ -21,8 +21,9 @@ def main(args, outs):
     args.coerce_strings()
     region = args.chrom+":"+str(args.start)+"-"+str(args.end)
     num_regions = 0
+    fasta = pyfasta.Fasta(args.fasta)
     with open(args.gtf) as gtf:
-        with open(outs.bed,'w') as bed:
+        with open(outs.bed+"tmp.bed",'w') as bed:
             for line in gtf:
                 if line.startswith("#"):
                     continue
@@ -33,43 +34,49 @@ def main(args, outs):
                 reg_type = tokens[2]
                 if not reg_type == "exon":
                     continue
-                start = int(tokens[3])
-                end = int(tokens[4])
+                start = max(0, int(tokens[3]) - 200)
+                end = min(len(fasta[chrom])-1,int(tokens[4])+200)
                 if end > start:
                     if start >= args.start and start <= args.end:
                         bed.write(chrom+"\t"+str(start)+"\t"+str(end)+"\n")
                         num_regions += 1
             if num_regions == 0:
                 bed.write(args.chrom+"\t"+str(args.start)+"\t"+str(int(args.start)+2)+"\n")
-            
+    with open(outs.bed,'w') as bed:
+        subprocess.check_call(['bedtools','merge','-i',outs.bed+"tmp.bed"],stdout=bed)
+    with open(outs.vcf+"ploidy.txt",'w') as ploidy_file:
+        for key in fasta.keys():
+            ploidy_file.write(key+"\t1\t"+str(len(fasta[key]))+"\tF\t"+str(args.ploidy)+"\n")
 
-    with open(outs.vcf[:-7]+".bcf",'w') as vcf:
+    with open(outs.vcf[:-7]+"tmp.bcf",'w') as vcf:
         #subprocess.check_call(['freebayes','-0','--pooled-continuous', '--use-best-n-alleles','4','--targets',outs.bed,'--fasta-reference',args.fasta,args.bam],stdout = vcf)
-        #subprocess.check_call(['freebayes','-0','--dont-left-align-indels','--no-indels','--no-mnps','--no-complex','-p',str(args.ploidy), '--use-best-n-alleles','4','--targets',outs.bed,'--fasta-reference',args.fasta,args.bam],stdout = vcf)
-        command = ['samtools','mpileup','-Bg','-m','3','-r',region,'-f',args.fasta,'-q','200',args.bam]
-
-        subprocess.check_call(command,stdout=vcf)
+        #subprocess.check_call(['freebayes','-0','--no-mnps','--no-complex','-p',str(args.ploidy), '--use-best-n-alleles','4','--region',region,'--fasta-reference',args.fasta,args.bam],stdout = vcf)
+        command = ['samtools','mpileup','-Bg','-m','3','-r',region,'-f',args.fasta,'-q','50']
+        if args.input_variants:
+            command.extend(['-l',args.input_variants])
+        #else:
+        #    command.extend(['-l',outs.bed])
+        command.append(args.bam)
+        #proc = subprocess.Popen(command,stdout=subprocess.PIPE)
+        #subprocess.check_call(['bcftools','call','-m','--variants-only','--ploidy',args.ploidy],stdin=proc.stdout,stdout=vcf, shell=True)
+        #proc.wait()
+        print " ".join(command)
+        subprocess.check_call(command, stdout = vcf)
+    with open(outs.vcf[:-7]+".bcf",'w') as vcf:
+        subprocess.check_call(['bcftools','call','-m','--variants-only','--ploidy-file',outs.vcf+"ploidy.txt",outs.vcf[:-7]+"tmp.bcf"],stdout=vcf)
     with open(outs.vcf[:-3],'w') as vcf:
         subprocess.check_call(['bcftools','view',outs.vcf[:-7]+".bcf"],stdout=vcf)
     subprocess.check_call(['bgzip',outs.vcf[:-3]])
     subprocess.check_call(['tabix','-p','vcf',outs.vcf])
 
 def join(args, outs, chunk_defs, chunk_outs):
-    assert(False)
-    outs.vcfs = {}
-    outs.vcf_indexes = {}
-    sample_vcfs = {}
+    vcfs = []
     for chunk_out in chunk_outs:
-        vcfs = sample_vcfs.setdefault(chunk_out.sample_name,[])
-        vcfs.append((chunk_out.region, chunk_out.vcf))
-    for sample, sample_out in sample_vcfs.iteritems():
-        out = sorted(sample_out)
-        sample_calls = [x[1] for x in out]
-        command = ['bcftools','concat']
-        command.extend(sample_calls)
-        with open(outs.vcf[0:-6]+sample+".vcf",'w') as tmp:
-            subprocess.check_call(command,stdout=tmp)
-        subprocess.check_call(['bgzip',outs.vcf[0:-6]+sample+".vcf"])
-        subprocess.check_call(['tabix','-p','vcf', outs.vcf[0:-6]+sample+".vcf.gz"])
-        outs.vcfs[sample] = outs.vcf[0:-6]+sample+".vcf.gz"
-        outs.vcf_indexes[sample] = outs.vcf[0:-6]+sample+".vcf.gz.tbi"
+        vcfs.append(chunk_out.vcf)
+    outs.vcfs = vcfs
+    #command = ['bcftools','concat']
+    #command.extend(vcfs)
+    #with open(outs.vcf[:-3],'w') as tmp:
+    #    subprocess.check_call(command,stdout=tmp)
+    #    subprocess.check_call(['bgzip',outs.vcf[0:-3]])
+    #    subprocess.check_call(['tabix','-p','vcf', outs.vcf])

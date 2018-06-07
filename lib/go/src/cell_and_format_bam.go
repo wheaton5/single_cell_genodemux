@@ -5,7 +5,7 @@ import "fmt"
 import "os"
 import "bufio"
 import "github.com/brentp/bigly/bamat"
-//import "strconv"
+import "strconv"
 import "github.com/biogo/hts/bam"
 //import "code.google.com/p/biogo.bam"
 import "github.com/biogo/hts/sam"
@@ -22,9 +22,15 @@ var end = flag.Int("end", 10000000000, "end of fetch in bam")
 var bamout = flag.String("bamout", "", "output bam filename")
 var readGroupsOut = flag.String("readGroupsOut", "", "output readgroup file")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
+var stats = flag.String("statsFile","","write statistics out to this file")
+var readsPerCell = flag.String("readsPerCell","","file to write reads per cell info to")
 
 func main() {
     flag.Parse()
+    if *readsPerCell == "" {
+        fmt.Fprintln(os.Stderr, "please provide -readsPerCell")
+        os.Exit(-1)
+    }
     //profiling code
     if *cpuprofile != "" {
         f, err := os.Create(*cpuprofile)
@@ -37,6 +43,15 @@ func main() {
         defer pprof.StopCPUProfile()
     }
 
+    statsFile, statsFileErr := os.Create(*stats)
+    if statsFileErr != nil { log.Fatal(statsFileErr) }
+    defer statsFile.Close()
+    statsFileWriter := bufio.NewWriter(statsFile)
+    defer statsFileWriter.Flush()
+    noCellBarcode := 0
+    noCell := 0
+    readsTotal := 0
+    
     // make map of cell barcodes
     cellMap := GetCellBarcodes()
     readGroups := map[string]bool{}
@@ -64,23 +79,28 @@ func main() {
     readGroupTag := sam.NewTag("RG")
     cellBxTag := sam.NewTag("CB")
     hasNs := false
+    readsPerCellFile, _ := os.Create(*readsPerCell)
+    readsPerCellWriter := bufio.NewWriter(readsPerCellFile)
+    defer readsPerCellFile.Close()
+    readsPerCellMap := map[string]int{}
     for {
         extant = bamIter.Next()
         if !extant {
             break
         }
+        readsTotal += 1
         read := bamIter.Record()
         cellBarcode := read.AuxFields.Get(cellBxTag)
         if cellBarcode == nil {
+            noCellBarcode += 1
             continue
         }
         _, extant = cellMap[cellBarcode.Value().(string)]
         if !extant {
+            noCell += 1
             continue
         }
         readGroups[cellBarcode.Value().(string)] = true //add to list of read groups
-        cigar := read.Cigar
-        cigarOps := []sam.CigarOp(cigar)
         tagIndex := -1
         for index, tag := range read.AuxFields {
             if tag.Tag() == readGroupTag {
@@ -88,15 +108,25 @@ func main() {
                 break
             }
         }
-        //if tagIndex == -1 {
-        //    fmt.Fprintln(os.Stderr, "RG tag didn't exist?")
-        //    fmt.Fprintln(os.Stderr, read.String())
-        //    os.Exit(-1)
-        //}
-        read.AuxFields[tagIndex], _ = sam.NewAux(readGroupTag, cellBarcode.Value()) //sam.ParseAux([]byte("RG:Z:"+cellBarcode.Value().(string)))
-        
+        if read.Flags & sam.Duplicate == sam.Duplicate {
+            continue
+        }
+        _, visited := readsPerCellMap[cellBarcode.Value().(string)]
+        if visited {
+            readsPerCellMap[cellBarcode.Value().(string)]++
+        } else {
+            readsPerCellMap[cellBarcode.Value().(string)] = 1
+        }
+        if tagIndex != -1 {
+            read.AuxFields[tagIndex], _ = sam.NewAux(readGroupTag, cellBarcode.Value()) //sam.ParseAux([]byte("RG:Z:"+cellBarcode.Value().(string)))
+        } else {
+            auxes := []sam.Aux(read.AuxFields)
+            newAux, _ := sam.NewAux(readGroupTag, cellBarcode.Value())
+            auxes = append(auxes,newAux)
+            read.AuxFields = sam.AuxFields(auxes)
+        }
         hasNs = false
-        for cigarOp := range cigarOps {
+        for _, cigarOp := range read.Cigar {
             if sam.CigarOp(cigarOp).Type() == sam.CigarSkipped {
                 hasNs = true
             }
@@ -113,7 +143,7 @@ func main() {
             qual := make([]byte, len(read.Qual))
             copy(qual, read.Qual)
             cigarBuild := []sam.CigarOp{}
-            for cigarOp := range cigarOps {
+            for _, cigarOp := range read.Cigar {
                 cigarOpTyped := sam.CigarOp(cigarOp)
                 cigarType := cigarOpTyped.Type()
                 if cigarType == sam.CigarSkipped {
@@ -121,40 +151,54 @@ func main() {
                     read.Qual = qual[readOffsetStart:readOffsetEnd]
                     read.Cigar = sam.Cigar(cigarBuild)
                     read.Pos = refOffsetStart
-                    if !sam.IsValidRecord(read) {
+                    if !IsValidRecord2(read) {
                         fmt.Fprintln(os.Stderr, "record not valid")
                         fmt.Fprintln(os.Stderr, read.String())
                         os.Exit(-1)
                     }
-                    err = bamWriter.Write(read)
-                    if err != nil { log.Fatal(err) }
-                    readOffsetStart = readOffsetEnd
+                    if readOffsetEnd-readOffsetStart > 29 {
+                        err = bamWriter.Write(read)
+                        if err != nil { log.Fatal(err) }
+                    }
+                    refOffsetEnd += cigarOpTyped.Len()
+                    readOffsetStart = readOffsetEnd 
                     refOffsetStart = refOffsetEnd
                     cigarBuild = []sam.CigarOp{}
                 } else {
                     cigarBuild = append(cigarBuild, cigarOpTyped)
+                    consumption := cigarType.Consumes()
+                    cigarLength := cigarOpTyped.Len()
+                    readOffsetEnd += consumption.Query * cigarLength
+                    refOffsetEnd += consumption.Reference * cigarLength
                 }
-                cigarLength := cigarOpTyped.Len()
-                consumption := cigarType.Consumes()
-                readOffsetEnd += consumption.Query * cigarLength
-                refOffsetEnd += consumption.Reference * cigarLength
             }
             if len(cigarBuild) > 0 {
                 read.Seq = sam.NewSeq(seq[readOffsetStart:readOffsetEnd])
                 read.Qual = qual[readOffsetStart:readOffsetEnd]
                 read.Cigar = sam.Cigar(cigarBuild)
                 read.Pos = refOffsetStart
-                if !sam.IsValidRecord(read) {
+                if !IsValidRecord2(read) {
                     fmt.Fprintln(os.Stderr, "record not valid")
                     fmt.Fprintln(os.Stderr, read.String())
                     os.Exit(-1)
                 }
-                err = bamWriter.Write(read)
-                if err != nil { log.Fatal(err) }
+                if readOffsetEnd - readOffsetStart > 29 {
+                    err = bamWriter.Write(read)
+                    if err != nil { log.Fatal(err) }
+                }
             }
         }
     }
 
+    for bx, count := range readsPerCellMap {
+        readsPerCellWriter.WriteString(bx+","+strconv.Itoa(count)+"\n")
+    }
+    readsPerCellWriter.Flush()
+
+    //output metrics
+    statsFileWriter.WriteString("no_cell_barcode,cell_barcode_no_cell_called\n")
+    statsFileWriter.WriteString(strconv.Itoa(noCellBarcode)+","+strconv.Itoa(noCell)+","+strconv.Itoa(readsTotal)+"\n")
+    statsFileWriter.Flush()
     //output read groups
     readGroupWriter, readGroupWriterErr := os.Create(*readGroupsOut)
     if readGroupWriterErr != nil { log.Fatal(readGroupWriterErr) }
@@ -166,6 +210,33 @@ func main() {
         readGroupBufferedWriter.WriteString("\n")
     }
 }
+
+
+func IsValidRecord2(r *sam.Record) bool {
+        if (r.Ref == nil || r.Pos == -1) && r.Flags&sam.Unmapped == 0 {
+                fmt.Println("r.Ref == nil || r.Pos == -1) && r.Flags&Unmapped == 0")
+                return false
+        }
+        if r.Flags&sam.Paired != 0 && (r.MateRef == nil || r.MatePos == -1) && r.Flags&sam.MateUnmapped == 0 {
+                fmt.Println("r.Flags&Paired != 0 && (r.MateRef == nil || r.MatePos == -1) && r.Flags&MateUnmapped == 0")
+                return false
+        }
+        if r.Flags&(sam.Unmapped|sam.ProperPair) == sam.Unmapped|sam.ProperPair {
+                fmt.Println("r.Flags&(Unmapped|ProperPair) == Unmapped|ProperPair")
+                return false
+        }
+        if r.Flags&(sam.Paired|sam.MateUnmapped|sam.ProperPair) == sam.Paired|sam.MateUnmapped|sam.ProperPair {
+                fmt.Println("r.Flags&(Paired|MateUnmapped|ProperPair) == Paired|MateUnmapped|ProperPair")
+                return false
+        }
+        if len(r.Qual) != 0 && r.Seq.Length != len(r.Qual) {
+
+               fmt.Println("len(r.Qual) != 0 && r.Seq.Length != len(r.Qual)")
+                return false
+        }
+        return true
+}
+
 
 func GetCellBarcodes() map[string]bool {
     cellMap := map[string]bool{}

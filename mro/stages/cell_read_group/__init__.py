@@ -8,7 +8,7 @@ def split(args):
     fasta = pyfasta.Fasta(args.fasta)
 
     for chrom in sorted(fasta.keys()):
-        chunk_size = 10000000
+        chunk_size = 1000000000
         start = 0
         while start < len(fasta[chrom]):
             end = min(len(fasta[chrom]), start+chunk_size)
@@ -20,11 +20,18 @@ def split(args):
 def main(args, outs):
     outs.coerce_strings()
     args.coerce_strings()
-    command = ['cell_and_format_bam','-bam='+args.bam,'-cells='+args.cells,'-chrom='+args.chrom,'-start='+str(args.start),'-end='+str(args.end),'-bamout='+outs.bam+"tmp.bam", '-readGroupsOut='+outs.read_groups]
+    command = ['cell_and_format_bam','-bam='+args.bam,'-cells='+args.cells,'-chrom='+args.chrom,'-start='+str(args.start),'-end='+str(args.end),'-bamout='+outs.bam+"tmp.bam", '-readGroupsOut='+outs.read_groups,'-statsFile='+outs.bam+"stats.csv", '-readsPerCell='+outs.reads_per_cell]
     print " ".join(command)
     subprocess.check_call(command)
     
-    subprocess.check_call(['samtools','sort','-o',outs.bam,outs.bam+"tmp.bam"])
+    subprocess.check_call(['samtools','sort',outs.bam+"tmp.bam",'-o',outs.bam])
+    
+    with open(outs.bam+"stats.csv") as stats: 
+        stats.readline()
+        tokens = stats.readline().strip().split(",")
+        outs.no_cell_barcode = int(tokens[0])
+        outs.no_cell_call = int(tokens[1])
+        outs.reads_total = int(tokens[2])
 
 def join(args, outs, chunk_defs, chunk_outs):
     read_groups = set()
@@ -32,9 +39,29 @@ def join(args, outs, chunk_defs, chunk_outs):
         with open(chunk_out.read_groups) as rgs:
             for line in rgs:
                 read_groups.add(line.strip())
-    outs.bams = [chunk_out.bam for chunk_out in chunk_outs]
+    #outs.bams = [chunk_out.bam for chunk_out in chunk_outs]
     print len(read_groups)
+    reads_per_cell = {}
+    for chunk_out in chunk_outs:
+        with open(chunk_out.reads_per_cell) as reads:
+            for line in reads:
+                tokens = line.strip().split(",")
+                reads_per_cell.setdefault(tokens[0],0)
+                reads_per_cell[tokens[0]] += int(tokens[1])
+    with open(outs.reads_per_cell,'w') as rpc:
+        for key, val in reads_per_cell.iteritems():
+            rpc.write(key+","+str(val)+"\n")
+    
+    outs.no_cell_barcode = 0
+    outs.no_cell_call = 0
+    outs.reads_total = 0
+    for chunk_out in chunk_outs:
+        outs.no_cell_barcode += chunk_out.no_cell_barcode
+        outs.no_cell_call += chunk_out.no_cell_call
+        outs.reads_total += chunk_out.reads_total
     bamin = pysam.AlignmentFile(args.bam)
+    outs.unmapped = bamin.unmapped
+    outs.mapped = bamin.mapped
     header = bamin.header
     read_group_header = []
     for read_group in read_groups:
@@ -56,6 +83,9 @@ def join(args, outs, chunk_defs, chunk_outs):
     print command
     with open(outs.bam,'w') as outbam:
         subprocess.check_call(command,stdout=outbam)
+    #with open(outs.bam,'w') as outbam:
+    #    subprocess.check_call(['samtools','sort',outs.bam+"unsorted.bam"],stdout=outbam)
+    #subprocess.check_call(['rm',outs.bam+"unsorted.bam"])
     subprocess.check_call(['samtools','index',outs.bam])
 
 def oldmain(args,outs):
