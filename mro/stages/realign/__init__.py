@@ -14,7 +14,7 @@ def split(args):
             end = min(len(fasta[chrom]), start+chunk_size)
             chunks.append({'chrom':chrom, 'start':start, 'end':end ,'__mem_gb':8,'__threads':1})
             start += chunk_size
-    return {'chunks':chunks,'join':{'mem_bg':8}}
+    return {'chunks':chunks,'join':{'__mem_gb':8}}
 
 
 def main(args, outs):
@@ -46,7 +46,10 @@ def main(args, outs):
             fastq.write(read.qual+"\n")
     print "bwa running"
     with open(outs.bam+"tmp.bam",'w') as tmpbam:
-        ps = subprocess.Popen(['bwa','mem',args.fasta,outs.bam+".fq"], stdout=subprocess.PIPE)
+        #ps = subprocess.Popen(['bwa','mem',args.fasta,outs.bam+".fq"], stdout=subprocess.PIPE)
+        command = ['minimap2', '-ax', 'splice', '-G'+str(args.max_intron_length/1000)+'k', '-k','21','-w','11','--sr','-A2','-B8','-O12,32', '-E2,1', '-r200', '-p.5', '-N20', '-f1000,5000', '-n2', '-m20', '-s40', '-g2000', '-2K50m', '--secondary=no',args.fasta,outs.bam+".fq"]
+        print " ".join(command)
+        ps = subprocess.Popen(command,stdout=subprocess.PIPE)
         subprocess.check_call(['samtools','view','-bS'],stdin=ps.stdout,stdout=tmpbam)
         ps.wait()
     print "bwa done"

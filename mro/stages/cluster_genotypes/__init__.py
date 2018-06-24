@@ -13,22 +13,40 @@ def split(args):
         chunks.append({'vcf':vcf, '__mem_gb':8})
     return {'chunks':chunks,'join':{'__mem_gb':8}}
 
+def getGC(fasta, chrom, pos, window):
+    seq = fasta[chrom][max(0,pos-window/2):min(len(fasta[chrom]),pos+window/2)]
+    gc = 0
+    for c in seq.upper():
+        if c == 'G' or c == 'C':
+            gc += 1
+    return gc/float(len(seq))
+
+
 def main(args, outs):
     args.coerce_strings()
     outs.coerce_strings()
     num_calls_used = 0
+    fasta = pyfasta.Fasta(args.fasta)
+    
     num_calls = 0
     metrics = {}
     outs.metrics = metrics
     with open(args.vcf,'r') as vcf_file:
         vcf_reader = vcf.Reader(vcf_file, compressed=True)
-        with open(outs.calls, 'w') as calls:
+        with open(outs.calls[:-3], 'w') as calls:
             for rec in vcf_reader:
                 if not rec.is_snp:
                     continue
                 num_calls +=  1
                 if str(rec.ALT[0]) == "<*>":
                     continue                
+                if rec.QUAL < args.qual_filter:
+                    continue
+                if getGC(fasta, rec.CHROM, rec.POS, 30) <= 0.15:
+                    continue
+                assert(fasta[rec.CHROM][rec.POS-1] == rec.REF)
+                if fasta[rec.CHROM][rec.POS-2] == rec.ALT[0] and fasta[rec.CHROM][rec.POS] == rec.ALT[0]:
+                    continue
                 refs = rec.get_hom_refs()#[call.sample for call in rec.get_hom_refs()]
                 alts = rec.get_hom_alts()#[call.sample for call in rec.get_hom_alts()]
                 hets = rec.get_hets()#[call.sample for call in rec.get_hets()]
@@ -66,7 +84,7 @@ def main(args, outs):
     metrics["alt_alleles_required"] = args.alt_alleles_required
     metrics["ref_alleles_required"] = args.ref_alleles_required
     outs.metrics = metrics
-    make_graph(outs.calls, outs.graph, outs.graph[:-4]+".abc", args.reads_per_cell, outs.graph+"alleles.csv", args.downsample_graph, args.ground_truth)
+    make_graph(outs.calls[:-3], outs.graph, outs.graph[:-4]+".abc", args.reads_per_cell, outs.graph+"alleles.csv", args.downsample_graph, args.ground_truth)
     #make_graph(outs.calls, outs.graph, args.reads_per_cell, outs.graph+"alleles.csv", args.downsample_graph, None, args.transcript_clusters)
 
 def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, downsample = None, ground_truth = None, transcript_clusters = None):
@@ -99,7 +117,7 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                 indel = "indel" if not(len(tokens[3]) == len(tokens[4])) else "snp"
                 if len(cells) == 2:
                     allele_counts_file.write(indel + "," + str(len(cells[0]))+","+str(len(cells[1]))+"\n")
-                for allele_cell_list in cells[1:]: #ignore ref alleles for concordancy
+                for (allele_index, allele_cell_list) in enumerate(cells):#[1:]: #ignore ref alleles for concordancy
                     for index1, cell1 in enumerate(allele_cell_list):
                         for index2 in range(index1+1,len(allele_cell_list)):
                             cell2 = allele_cell_list[index2]
@@ -111,8 +129,10 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                                 cellb = cell1
                             edges = graph.setdefault(cella, {})
                             count = edges.setdefault(cellb, 0)
-                            
-                            graph[cella][cellb] += 1
+                            if allele_index == 0:
+                                graph[cella][cellb] += 1.0/6.0
+                            else:
+                                graph[cella][cellb] += 1
                 for index in range(len(cells)):
                     for index2 in range(index+1,len(cells)):
                         if index == index2:
@@ -191,7 +211,7 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
 
             for node1, node2s in graph.iteritems():
                 for node2, count in node2s.iteritems():
-                    if count < 5:
+                    if count < 2:
                         continue
                     if not node1 in nodes_to_keep:
                         continue
@@ -236,7 +256,7 @@ def join(args, outs, chunk_defs, chunk_outs):
             metrics[key] += val
     metrics["alt_alleles_required"] = args.alt_alleles_required
     metrics["ref_alleles_required"] = args.ref_alleles_required
-    with open(outs.calls+"unsorted.tsv",'w') as calls:
+    with open(outs.calls[:-3]+"unsorted.tsv",'w') as calls:
         command = ['cat']
         command.extend(usable_calls)
         #print command
@@ -245,13 +265,13 @@ def join(args, outs, chunk_defs, chunk_outs):
         #    with open(calls_file) as cfile:
         #        for line in cfile:
         #            calls.write(line)
-    with open(outs.calls,'w') as calls:
-        subprocess.check_call(['sort', '-k1,1', '-k2,2n', outs.calls+"unsorted.tsv"],stdout=calls)
-    metrics["graph_stats"] = make_graph(outs.calls, outs.graph, outs.graph[:-4]+".abc", args.reads_per_cell, outs.graph+"alleles.csv", args.downsample_graph, args.ground_truth)
+    with open(outs.calls[:-3],'w') as calls:
+        subprocess.check_call(['sort', '-k1,1', '-k2,2n', outs.calls[:-3]+"unsorted.tsv"],stdout=calls)
+    metrics["graph_stats"] = make_graph(outs.calls[:-3], outs.graph, outs.graph[:-4]+".abc", args.reads_per_cell, outs.graph+"alleles.csv", args.downsample_graph, args.ground_truth)
     subprocess.check_call(['mcl',outs.graph[:-4]+".abc",'--abc','-o',outs.graph[:-4]+".mcl", '-tf', '#ceilnb(300),#knn(200)'])
 
     outs.metrics = metrics
     with open(outs.metrics_json,'w') as mets:
         json.dump(metrics, mets)
-        
-    assert(False) 
+    subprocess.check_call(['bgzip',outs.calls[:-3]])
+    subprocess.check_call(['tabix','-p',outs.calls])    

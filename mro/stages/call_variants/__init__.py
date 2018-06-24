@@ -13,7 +13,7 @@ def split(args):
             end = min(len(fasta[key]), start+chunk_size)
             chunks.append({'chrom':key,'start':start,'end':end,'__mem_gb':8,'__threads':1})
             start += chunk_size
-    return {'chunks':chunks,'join':{'mem_bg':2}}
+    return {'chunks':chunks,'join':{'__mem_gb':2}}
 
 
 def main(args, outs):
@@ -34,8 +34,8 @@ def main(args, outs):
                 reg_type = tokens[2]
                 if not reg_type == "exon":
                     continue
-                start = max(0, int(tokens[3]) - 200)
-                end = min(len(fasta[chrom])-1,int(tokens[4])+200)
+                start = max(0, int(tokens[3]) - args.call_near_exon_window)
+                end = min(len(fasta[chrom])-1,int(tokens[4])+args.call_near_exon_window)
                 if end > start:
                     if start >= args.start and start <= args.end:
                         bed.write(chrom+"\t"+str(start)+"\t"+str(end)+"\n")
@@ -51,11 +51,11 @@ def main(args, outs):
     with open(outs.vcf[:-7]+"tmp.bcf",'w') as vcf:
         #subprocess.check_call(['freebayes','-0','--pooled-continuous', '--use-best-n-alleles','4','--targets',outs.bed,'--fasta-reference',args.fasta,args.bam],stdout = vcf)
         #subprocess.check_call(['freebayes','-0','--no-mnps','--no-complex','-p',str(args.ploidy), '--use-best-n-alleles','4','--region',region,'--fasta-reference',args.fasta,args.bam],stdout = vcf)
-        command = ['samtools','mpileup','-Bg','-m','3','-r',region,'-f',args.fasta,'-q','50']
+        command = ['samtools','mpileup','-Bg','-m','3','-r',region,'-f',args.fasta,'-q',str(args.min_mapq)]
         if args.input_variants:
             command.extend(['-l',args.input_variants])
-        #else:
-        #    command.extend(['-l',outs.bed])
+        elif args.call_exome_only:
+            command.extend(['-l',outs.bed])
         command.append(args.bam)
         #proc = subprocess.Popen(command,stdout=subprocess.PIPE)
         #subprocess.check_call(['bcftools','call','-m','--variants-only','--ploidy',args.ploidy],stdin=proc.stdout,stdout=vcf, shell=True)

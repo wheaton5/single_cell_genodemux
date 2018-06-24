@@ -2,6 +2,7 @@ filetype png;
 filetype bam;
 filetype dot;
 filetype tsv;
+filetype tsv.gz;
 filetype bed;
 filetype bed.gz;
 filetype txt;
@@ -17,6 +18,7 @@ stage REALIGN(
     in bam bam,
     in string fasta,
     in csv cells,
+    in int max_intron_length,
     out bam bam,
     out csv read_groups,
     out csv reads_per_cell,
@@ -58,12 +60,31 @@ stage SPLIT_N_READS(
     in bam bam,
 )
 
+stage ANALYZE_SC_VARIANTS(
+    in string fasta,
+    in string gtf,
+    in int near_exon_window,
+    in tsv.gz sc_calls,
+    in bam[] bam_files,
+    in string[] bam_names,
+    in vcf.gz ground_truth,
+    out csv analyze_sc_variants,
+    src py "stages/analyze_sc_variants",
+) split using (
+    in string chrom,
+    in int start,
+    in int end,
+)
+
 stage CALL_VARIANTS(
     in bam bam,
     in string fasta,
     in int ploidy,
     in gtf gtf,
     in string input_variants,
+    in bool call_exome_only,
+    in int call_near_exon_window,
+    in int min_mapq,
     out vcf.gz vcf,
     out vcf.gz[] vcfs,
     out bed bed,
@@ -77,16 +98,18 @@ stage CALL_VARIANTS(
 stage CLUSTER_GENOTYPES(
     in vcf.gz[] vcfs,
     in int ploidy,
+    in string fasta,
     in int ref_alleles_required,
     in int alt_alleles_required,
     in csv reads_per_cell,
     in string ground_truth,
     in int downsample_graph,
     in csv transcript_clusters,
+    in int qual_filter,
     out map metrics,
     out json metrics_json,
     out dot graph,
-    out tsv calls,
+    out tsv.gz calls,
     src py "stages/cluster_genotypes",
 ) split using (
     in vcf.gz vcf,
@@ -100,11 +123,13 @@ pipeline CLUSTER_GENOTYPES_PIPE(
     in csv reads_per_cell,
     in string ground_truth,
     in int downsample_graph,
+    in string fasta,
     in csv transcript_clusters,
+    in int qual_filter,
     out map metrics,
     out json metrics_json,
     out dot graph,
-    out tsv calls,
+    out tsv.gz calls,
 )
 {
     call CLUSTER_GENOTYPES(
@@ -116,6 +141,8 @@ pipeline CLUSTER_GENOTYPES_PIPE(
         ground_truth = self.ground_truth,
         downsample_graph = self.downsample_graph,
         transcript_clusters = self.transcript_clusters,
+        fasta = self.fasta,
+        qual_filter = self.qual_filter,
     )
 
     return (
@@ -129,16 +156,23 @@ pipeline CLUSTER_GENOTYPES_PIPE(
 pipeline CALL_AND_CLUSTER(
     in bam bam,
     in string fasta,
+    in string[] comparison_bam_files,
+    in string[] comparison_bam_names,
     in int ploidy,
     in gtf gtf,
     in int alt_alleles_required,
     in int ref_alleles_required,
     in string input_variants,
     in csv reads_per_cell,
-    in string ground_truth,
+    in string cells_ground_truth,
+    in vcf.gz variants_ground_truth,
     in int downsample_graph,
     in csv transcript_clusters,
-    out tsv calls,
+    in int qual_filter,
+    in bool call_exome_only,
+    in int call_near_exon_window,
+    in int min_mapq,
+    out tsv.gz calls,
 )
 {
     call CALL_VARIANTS(
@@ -147,6 +181,9 @@ pipeline CALL_AND_CLUSTER(
         fasta = self.fasta,
         gtf = self.gtf,
         input_variants = self.input_variants,
+        call_exome_only = self.call_exome_only,
+        call_near_exon_window = self.call_near_exon_window,
+        min_mapq = self.min_mapq,
     )
 
     call CLUSTER_GENOTYPES(
@@ -154,10 +191,22 @@ pipeline CALL_AND_CLUSTER(
         ploidy = self.ploidy,
         alt_alleles_required = self.alt_alleles_required,
         ref_alleles_required = self.ref_alleles_required,
+        fasta = self.fasta,
         reads_per_cell = self.reads_per_cell,
-        ground_truth = self.ground_truth,
+        ground_truth = self.cells_ground_truth,
         downsample_graph = self.downsample_graph,
         transcript_clusters = self.transcript_clusters,
+        qual_filter = self.qual_filter,
+    )
+    
+    call ANALYZE_SC_VARIANTS(
+        fasta = self.fasta,
+        gtf = self.gtf,
+        near_exon_window = 200,
+        sc_calls = CLUSTER_GENOTYPES.calls,
+        bam_files = self.comparison_bam_files,
+        bam_names = self.comparison_bam_names,
+        ground_truth = self.variants_ground_truth,
     )
 
     return (
@@ -176,11 +225,18 @@ pipeline CELL_MUX(
     in gtf gtf,
     in int alt_alleles_required,
     in int ref_alleles_required,
+    in string[] comparison_bam_files,
+    in string[] comparison_bam_names,
+    in vcf.gz variants_ground_truth,
     in string ground_truth,
     in string input_variants,
     in int downsample_graph,
     in csv transcript_clusters,
-    out tsv assignments,
+    in int qual_filter,
+    in bool call_exome_only,
+    in int call_near_exon_window,
+    in int min_mapq,
+    out tsv.gz calls,
 )
 {
 
@@ -198,14 +254,21 @@ pipeline CELL_MUX(
         reads_per_cell = REFORMAT_BAM.reads_per_cell,
         alt_alleles_required = self.alt_alleles_required,
         ref_alleles_required = self.ref_alleles_required,
-        ground_truth = self.ground_truth,
+        comparison_bam_files = self.comparison_bam_files,
+        comparison_bam_names = self.comparison_bam_names,
+        variants_ground_truth = self.variants_ground_truth,
+        cells_ground_truth = self.ground_truth,
         input_variants = self.input_variants,
         downsample_graph = self.downsample_graph,
+        call_exome_only = self.call_exome_only,
+        call_near_exon_window = self.call_near_exon_window,
         transcript_clusters = self.transcript_clusters,
+        qual_filter = self.qual_filter,
+        min_mapq = self.min_mapq,
     )
 
     return (
-        assignments = CALL_AND_CLUSTER.calls,
+        calls = CALL_AND_CLUSTER.calls,
     )
 }
 
@@ -215,18 +278,27 @@ pipeline CELL_MUX_BWA(
     in csv cells,
     in int ploidy,
     in gtf gtf,
+    in int max_intron_length,
     in int alt_alleles_required,
     in int ref_alleles_required,
     in string ground_truth,
     in string input_variants,
+    in vcf.gz variants_ground_truth,
+    in string[] comparison_bam_files,
+    in string[] comparison_bam_names,
     in int downsample_graph,
     in csv transcript_clusters,
-    out tsv assignments,
+    in int qual_filter,
+    in bool call_exome_only,
+    in int call_near_exon_window,
+    in int min_mapq,
+    out tsv.gz calls,
 )
 {
 
     call REALIGN(
         bam = self.bam,
+        max_intron_length = self.max_intron_length,
         fasta = self.fasta,
         cells = self.cells,
     )
@@ -239,14 +311,21 @@ pipeline CELL_MUX_BWA(
         reads_per_cell = REALIGN.reads_per_cell,
         alt_alleles_required = self.alt_alleles_required,
         ref_alleles_required = self.ref_alleles_required,
-        ground_truth = self.ground_truth,
+        cells_ground_truth = self.ground_truth,
+        variants_ground_truth = self.variants_ground_truth,
+        comparison_bam_files = self.comparison_bam_files,
+        comparison_bam_names = self.comparison_bam_names,
         input_variants = self.input_variants,
         downsample_graph = self.downsample_graph,
         transcript_clusters = self.transcript_clusters,
+        qual_filter = self.qual_filter,
+        call_exome_only = self.call_exome_only,
+        call_near_exon_window = self.call_near_exon_window,
+        min_mapq = self.min_mapq,
     )
 
     return (
-        assignments = CALL_AND_CLUSTER.calls,
+        calls = CALL_AND_CLUSTER.calls,
     )
 }
 
