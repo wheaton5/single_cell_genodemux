@@ -1,119 +1,4 @@
-filetype png;
-filetype bam;
-filetype dot;
-filetype tsv;
-filetype tsv.gz;
-filetype bed;
-filetype bed.gz;
-filetype txt;
-filetype json;
-filetype fa;
-filetype vcf.gz;
-filetype fasta;
-filetype csv;
-filetype gtf;
-filetype sam;
-
-stage REALIGN(
-    in bam bam,
-    in string fasta,
-    in csv cells,
-    in int max_intron_length,
-    out bam bam,
-    out csv read_groups,
-    out csv reads_per_cell,
-    src py "stages/realign",
-) split using (
-    in string chrom,
-    in int start,
-    in int end,
-)
-
-stage REFORMAT_BAM(
-    in bam bam,
-    in string fasta,
-    in csv cells,
-    out csv reads_per_cell,
-    out sam header,
-    out csv read_groups,
-    out bam bam,
-    out int no_cell_barcode,
-    out int no_cell_call,
-    out int unmapped,
-    out int mapped,
-    out int reads_total,
-    src py "stages/cell_read_group",
-) split using (
-    in string chrom,
-    in int start,
-    in int end,
-)
-
-stage SPLIT_N_READS(
-    in bam[] bams,
-    in string fasta,
-    in sam header,
-    out bam bam,
-    out csv reads_per_cell,
-    src py "stages/split_n_reads",
-) split using (
-    in bam bam,
-)
-
-stage ANALYZE_SC_VARIANTS(
-    in string fasta,
-    in string gtf,
-    in int near_exon_window,
-    in tsv.gz sc_calls,
-    in bam[] bam_files,
-    in string[] bam_names,
-    in vcf.gz ground_truth,
-    out csv analyze_sc_variants,
-    src py "stages/analyze_sc_variants",
-) split using (
-    in string chrom,
-    in int start,
-    in int end,
-)
-
-stage CALL_VARIANTS(
-    in bam bam,
-    in string fasta,
-    in int ploidy,
-    in gtf gtf,
-    in string input_variants,
-    in bool call_exome_only,
-    in int call_near_exon_window,
-    in int min_mapq,
-    out vcf.gz vcf,
-    out vcf.gz[] vcfs,
-    out bed bed,
-    src py "stages/call_variants",
-) split using (
-    in string chrom,
-    in int start,
-    in int end,
-)
-
-stage CLUSTER_GENOTYPES(
-    in vcf.gz[] vcfs,
-    in int ploidy,
-    in string fasta,
-    in int ref_alleles_required,
-    in int alt_alleles_required,
-    in csv reads_per_cell,
-    in string ground_truth,
-    in int downsample_graph,
-    in csv transcript_clusters,
-    in int qual_filter,
-    out map metrics,
-    out json metrics_json,
-    out dot graph,
-    out tsv.gz calls,
-    src py "stages/cluster_genotypes",
-) split using (
-    in vcf.gz vcf,
-)
+@include "_demux_stages.mro"
 
 pipeline CLUSTER_GENOTYPES_PIPE(
     in vcf.gz[] vcfs,
@@ -130,6 +15,12 @@ pipeline CLUSTER_GENOTYPES_PIPE(
     out json metrics_json,
     out dot graph,
     out tsv.gz calls,
+    out mcl clusters,
+    out png concordance_bargraph,
+    out png concordance_heatmap,
+    out png pca_vs_clusters,
+    out csv pca_vs_clusters_data,
+    out csv concordance,
 )
 {
     call CLUSTER_GENOTYPES(
@@ -150,6 +41,12 @@ pipeline CLUSTER_GENOTYPES_PIPE(
         metrics_json = CLUSTER_GENOTYPES.metrics_json,
         graph = CLUSTER_GENOTYPES.graph,
         calls = CLUSTER_GENOTYPES.calls,
+        clusters = CLUSTER_GENOTYPES.clusters,
+        concordance_bargraph = CLUSTER_GENOTYPES.concordance_bargraph,
+        concordance_heatmap = CLUSTER_GENOTYPES.concordance_heatmap,
+        concordance = CLUSTER_GENOTYPES.concordance,
+        pca_vs_clusters = CLUSTER_GENOTYPES.pca_vs_clusters,
+        pca_vs_clusters_data = CLUSTER_GENOTYPES.pca_vs_clusters_data,
     )
 }
 
@@ -173,6 +70,13 @@ pipeline CALL_AND_CLUSTER(
     in int call_near_exon_window,
     in int min_mapq,
     out tsv.gz calls,
+    out vcf.gz sc_variants,
+    out mcl clusters,
+    out png concordance_bargraph,
+    out png concordance_heatmap,
+    out csv concordance,
+    out png pca_vs_clusters,
+    out csv pca_vs_clusters_data,
 )
 {
     call CALL_VARIANTS(
@@ -203,6 +107,7 @@ pipeline CALL_AND_CLUSTER(
         fasta = self.fasta,
         gtf = self.gtf,
         near_exon_window = 200,
+        sc_bam = self.bam,
         sc_calls = CLUSTER_GENOTYPES.calls,
         bam_files = self.comparison_bam_files,
         bam_names = self.comparison_bam_names,
@@ -211,6 +116,13 @@ pipeline CALL_AND_CLUSTER(
 
     return (
         calls = CLUSTER_GENOTYPES.calls,
+        sc_variants = CALL_VARIANTS.vcf,
+        clusters = CLUSTER_GENOTYPES.clusters,
+        concordance_bargraph = CLUSTER_GENOTYPES.concordance_bargraph,
+        concordance_heatmap = CLUSTER_GENOTYPES.concordance_heatmap,
+        concordance = CLUSTER_GENOTYPES.concordance,
+        pca_vs_clusters = CLUSTER_GENOTYPES.pca_vs_clusters,
+        pca_vs_clusters_data = CLUSTER_GENOTYPES.pca_vs_clusters_data,
     )
 }
 
@@ -237,6 +149,13 @@ pipeline CELL_MUX(
     in int call_near_exon_window,
     in int min_mapq,
     out tsv.gz calls,
+    out vcf.gz sc_variants,
+    out mcl clusters,
+    out png concordance_bargraph,
+    out png concordance_heatmap,
+    out csv concordance,
+    out csv pca_vs_clusters_data,
+    out png pca_vs_clusters,
 )
 {
 
@@ -269,6 +188,13 @@ pipeline CELL_MUX(
 
     return (
         calls = CALL_AND_CLUSTER.calls,
+        sc_variants = CALL_AND_CLUSTER.sc_variants,
+        clusters = CALL_AND_CLUSTER.clusters,
+        concordance_bargraph = CALL_AND_CLUSTER.concordance_bargraph,
+        concordance_heatmap = CALL_AND_CLUSTER.concordance_heatmap,
+        concordance = CALL_AND_CLUSTER.concordance,
+        pca_vs_clusters = CALL_AND_CLUSTER.pca_vs_clusters,
+        pca_vs_clusters_data = CALL_AND_CLUSTER.pca_vs_clusters_data,
     )
 }
 
@@ -293,6 +219,13 @@ pipeline CELL_MUX_BWA(
     in int call_near_exon_window,
     in int min_mapq,
     out tsv.gz calls,
+    out mcl clusters,
+    out vcf.gz sc_variants,
+    out png concordance_bargraph,
+    out png concordance_heatmap,
+    out csv concordance,
+    out csv pca_vs_clusters_data,
+    out png pca_vs_clusters,
 )
 {
 
@@ -326,6 +259,13 @@ pipeline CELL_MUX_BWA(
 
     return (
         calls = CALL_AND_CLUSTER.calls,
+        sc_variants = CALL_AND_CLUSTER.sc_variants,
+        clusters = CALL_AND_CLUSTER.clusters,
+        concordance_bargraph = CALL_AND_CLUSTER.concordance_bargraph,
+        concordance_heatmap = CALL_AND_CLUSTER.concordance_heatmap,
+        concordance = CALL_AND_CLUSTER.concordance,
+        pca_vs_clusters_data = CALL_AND_CLUSTER.pca_vs_clusters_data,
+        pca_vs_clusters = CALL_AND_CLUSTER.pca_vs_clusters,
     )
 }
 

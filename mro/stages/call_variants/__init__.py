@@ -74,9 +74,12 @@ def join(args, outs, chunk_defs, chunk_outs):
     for chunk_out in chunk_outs:
         vcfs.append(chunk_out.vcf)
     outs.vcfs = vcfs
-    #command = ['bcftools','concat']
-    #command.extend(vcfs)
-    #with open(outs.vcf[:-3],'w') as tmp:
-    #    subprocess.check_call(command,stdout=tmp)
-    #    subprocess.check_call(['bgzip',outs.vcf[0:-3]])
-    #    subprocess.check_call(['tabix','-p','vcf', outs.vcf])
+    command = ['bcftools','concat','-O','v']
+    command.extend(vcfs)
+    with open(outs.vcf[:-3]+"tmp.vcf",'w') as tmp:
+        subprocess.check_call(command,stdout=tmp)
+    with open(outs.vcf[:-3],'w') as tmp:
+        subprocess.check_call(['sort', '-k1,1','-k2,2n',outs.vcf[:-3]+"tmp.vcf"],stdout=tmp)
+        
+        subprocess.check_call(['bgzip',outs.vcf[:-3]])
+        subprocess.check_call(['tabix','-p','vcf', outs.vcf])

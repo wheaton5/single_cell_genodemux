@@ -28,8 +28,9 @@ def main(args, outs):
             barcode = line.strip().split(",")[0]
             cells.add(barcode)
     bam = pysam.AlignmentFile(args.bam)
+    recent_umis = {} # map from bc+umi to last known location
     with open(outs.bam+".fq",'w') as fastq:
-        for read in bam.fetch(args.chrom, args.start, args.end):
+        for (index, read) in enumerate(bam.fetch(args.chrom, args.start, args.end)):
             if not read.has_tag("CB"):
                 continue
             cell_barcode = read.get_tag("CB")
@@ -40,6 +41,18 @@ def main(args, outs):
             UMI = read.get_tag("UB")
             if read.is_secondary or read.is_supplementary:
                 continue
+            pos = read.pos
+            full_umi = cell_barcode + UMI + str(pos)
+            if full_umi in recent_umis:
+                continue
+            recent_umis[full_umi] = pos
+            if index % 1000000 == 0:
+                keys_to_remove = []
+                for key, val in recent_umis.iteritems():
+                    if val - pos > 20000:
+                        keys_to_remove.append(key)
+                for key in keys_to_remove:
+                    del recent_umis[key]
             fastq.write("@"+read.qname+";"+cell_barcode+";"+UMI+"\n")
             fastq.write(read.seq+"\n")
             fastq.write("+\n")

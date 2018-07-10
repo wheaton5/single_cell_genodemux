@@ -242,6 +242,8 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
             graph_stats['edge_weight_histogram'] = edge_weight_counts
     return graph_stats
 
+from plotnine import *
+import matplotlib
     
                     
 
@@ -250,7 +252,7 @@ def join(args, outs, chunk_defs, chunk_outs):
     usable_calls = []
     for chunk_out in chunk_outs:
         chunk_out.coerce_strings()
-        usable_calls.append(chunk_out.calls)
+        usable_calls.append(chunk_out.calls[:-3])
         for key, val in chunk_out.metrics.iteritems():
             metrics.setdefault(key, 0)
             metrics[key] += val
@@ -268,10 +270,90 @@ def join(args, outs, chunk_defs, chunk_outs):
     with open(outs.calls[:-3],'w') as calls:
         subprocess.check_call(['sort', '-k1,1', '-k2,2n', outs.calls[:-3]+"unsorted.tsv"],stdout=calls)
     metrics["graph_stats"] = make_graph(outs.calls[:-3], outs.graph, outs.graph[:-4]+".abc", args.reads_per_cell, outs.graph+"alleles.csv", args.downsample_graph, args.ground_truth)
-    subprocess.check_call(['mcl',outs.graph[:-4]+".abc",'--abc','-o',outs.graph[:-4]+".mcl", '-tf', '#ceilnb(300),#knn(200)'])
+    subprocess.check_call(['mcl',outs.graph[:-4]+".abc",'--abc','-o',outs.clusters, '-tf', '#ceilnb(300),#knn(200)'])
 
     outs.metrics = metrics
+    subprocess.check_call(['bgzip',outs.calls[:-3]])
+    subprocess.check_call(['tabix','-p', 'vcf',outs.calls])    
+    max_clusters = 10
+    clusters, cluster_names, cell_clusters = load_clustering(outs.clusters, max_clusters)
+    if not args.ground_truth == None: 
+        cluster_concordance(args.ground_truth, outs.concordance, outs.concordance_barchart, outs.concordance_heatmap, max_clusters, clusters, cluster_names, cell_clusters)
+    if not args.transcription_pca is None:
+        write_pca_colored_by_cluster(args.transcription_pca, outs.pca_vs_clusters, outs.pca_vs_clusters_data, cell_clusters)
     with open(outs.metrics_json,'w') as mets:
         json.dump(metrics, mets)
-    subprocess.check_call(['bgzip',outs.calls[:-3]])
-    subprocess.check_call(['tabix','-p',outs.calls])    
+
+def write_pca_colored_by_cluster(pca, pca_vs_clusters, pca_vs_clusters_data, cell_clusters):
+    with open(pca) as projection:
+        with open(pca_vs_clusters_data,'w') as out:
+            out.write(projection.readline().strip()+",cluster\n")
+            for line in projection:
+                cell = line.strip().split(",")[0]
+                if cell not in cell_clusters: 
+                    continue
+                cluster = cell_clusters[cell]
+                out.write(line.strip()+","+str(cluster)+"\n")
+    df = pd.DataFrame(pca_vs_clusters_data)
+    pca_graph = ggplot(df)+geom_point(aes(x='PC-1',y='PC-2',color='cluster'))
+    pca_graph.write(pca_vs_clusters)
+
+def cluster_concordance(ground_truth, concordance_out, barchart, heatmap, max_clusters, clusters, cluster_names, cell_clusters):
+    cluster_assignment_counts, assignment_names, assignment_total = \
+    compare_ground_truth(ground_truth, cluster_names, cell_clusters, max_clusters)
+    with open(concordance_out, 'w') as concordance:
+        concordance.write("ground_truth,cluster,count,assignment_total,cluster_total\n")
+        for cluster, assignment_counts in cluster_assignment_counts.iteritems():
+            for assignment, count in assignment_counts.iteritems():
+                out.write(str(assignment)+","+str(cluster)+","+str(count)+","+str(assignment_total[assignment])+","+str(cluster_total[cluster])+"\n")
+    df = pd.read_csv(concordance_out)
+    barchart_obj = ggplot(df)+geom_bar(aes(x='ground_truth',y='count',color='cluster'),position='dodge',stat='identity')
+    barchard_obj.save(barchart)
+    df['count/cluster_total'] = df.count/df.cluster_total
+    heatmap_obj = ggplot(df)+geom_tile(aes(x='ground_truth',y='cluster',fill='count/cluster_total'))
+    heatmap_obj.save(heatmap)
+
+def compare_ground_truth(ground_truth, cluster_names, cell_clusters, max_clusters):
+    assignment_names = set()
+    assignment_total = {}
+    cluster_assignment_counts = {}
+    with open(ground_truth) as demux:
+        demux.readline() # get rid of header
+        for line in demux:
+            tokens = line.strip().split()
+            assignment = tokens[6]
+            cell = tokens[0]
+            cluster = cell_clusters[cell]
+            if cluster > max_clusters:
+                cluster = "unknown_cluster"
+            cluster_assignment_counts.setdefault(cluster,[])
+            cluster_assignment_counts[cluster][assignment] += 1
+            assignment_names.add(assignment)
+            assignment_total.setdefault(assignment,0)
+            assignment_total[assignment] += 1
+        for cluster in cluster_names:
+            for assignment in assignment_names:
+                cluster_assignment_counts.setdefault(cluster,{})
+                cluster_assignment_counts[cluster].setdefault(assingment,0)
+    return cluster_assignment_counts, assignment_names, assignment_total
+            
+
+def load_clustering(mcl_file, max_clusters):
+    cluster_names = set()
+    clusters = {}
+    cluster_total = {}
+    with open(mcl_file) as mcl:
+        for index, line in enumerate(mcl):
+            clusters[index] = set()
+            for cell in line.strip().split:
+                clusters[index].add(cell)
+                if index <= max_clusters:
+                    cluster_names.add(index)
+                    cluster = index
+                else:
+                    cluster = "unknown_cluster"
+                    clsuter_names.add(cluster)
+                cell_clusters[cell] = cluster
+                clusters_total.setdefault(cluster,0)
+                cluster_total[cluster] += 1
+    return clusters, cluster_names, cluster_total
