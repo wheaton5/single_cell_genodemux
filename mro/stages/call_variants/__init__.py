@@ -42,8 +42,10 @@ def main(args, outs):
                         num_regions += 1
             if num_regions == 0:
                 bed.write(args.chrom+"\t"+str(args.start)+"\t"+str(int(args.start)+2)+"\n")
+    with open(outs.bed+"tmp2.bed",'w') as bed:
+        subprocess.check_call(['bedtools','sort', '-i',outs.bed+"tmp.bed"],stdout=bed)
     with open(outs.bed,'w') as bed:
-        subprocess.check_call(['bedtools','merge','-i',outs.bed+"tmp.bed"],stdout=bed)
+        subprocess.check_call(['bedtools','merge','-i',outs.bed+"tmp2.bed"],stdout=bed)
     with open(outs.vcf+"ploidy.txt",'w') as ploidy_file:
         for key in fasta.keys():
             ploidy_file.write(key+"\t1\t"+str(len(fasta[key]))+"\tF\t"+str(args.ploidy)+"\n")

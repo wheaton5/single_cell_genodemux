@@ -9,8 +9,12 @@ pipeline CLUSTER_GENOTYPES_PIPE(
     in string ground_truth,
     in int downsample_graph,
     in string fasta,
+    in bam bam,
     in csv transcript_clusters,
     in int qual_filter,
+    in int num_clusters,
+    in int min_clusters,
+    in int max_clusters,
     out map metrics,
     out json metrics_json,
     out dot graph,
@@ -26,6 +30,7 @@ pipeline CLUSTER_GENOTYPES_PIPE(
     call CLUSTER_GENOTYPES(
         vcfs = self.vcfs,
         ploidy = self.ploidy,  
+        bam = self.bam,
         ref_alleles_required = self.ref_alleles_required,
         alt_alleles_required = self.alt_alleles_required,
         reads_per_cell = self.reads_per_cell,
@@ -34,6 +39,9 @@ pipeline CLUSTER_GENOTYPES_PIPE(
         transcript_clusters = self.transcript_clusters,
         fasta = self.fasta,
         qual_filter = self.qual_filter,
+        num_clusters = self.num_clusters,
+        min_clusters = self.min_clusters,
+        max_clusters = self.max_clusters,
     )
 
     return (
@@ -48,6 +56,29 @@ pipeline CLUSTER_GENOTYPES_PIPE(
         pca_vs_clusters = CLUSTER_GENOTYPES.pca_vs_clusters,
         pca_vs_clusters_data = CLUSTER_GENOTYPES.pca_vs_clusters_data,
     )
+}
+
+
+pipeline CALL_PIPE(
+    in bam bam,
+    in int ploidy,
+    in string fasta,
+    in gtf gtf,
+    
+){
+    call CALL_VARIANTS(
+        bam = self.bam,
+        ploidy = self.ploidy,
+        fasta = self.fasta,
+        gtf = self.gtf,
+        input_variants = null,
+        call_exome_only = true,
+        call_near_exon_window = 200,
+        min_mapq = 50,
+    )
+
+    return ()
+
 }
 
 pipeline CALL_AND_CLUSTER(
@@ -69,6 +100,9 @@ pipeline CALL_AND_CLUSTER(
     in bool call_exome_only,
     in int call_near_exon_window,
     in int min_mapq,
+    in int num_clusters,
+    in int min_clusters,
+    in int max_clusters,
     out tsv.gz calls,
     out vcf.gz sc_variants,
     out mcl clusters,
@@ -96,11 +130,15 @@ pipeline CALL_AND_CLUSTER(
         alt_alleles_required = self.alt_alleles_required,
         ref_alleles_required = self.ref_alleles_required,
         fasta = self.fasta,
+        bam = self.bam,
         reads_per_cell = self.reads_per_cell,
         ground_truth = self.cells_ground_truth,
         downsample_graph = self.downsample_graph,
         transcript_clusters = self.transcript_clusters,
         qual_filter = self.qual_filter,
+        num_clusters = self.num_clusters,
+        min_clusters = self.min_clusters,
+        max_clusters = self.max_clusters,
     )
     
     call ANALYZE_SC_VARIANTS(
@@ -129,73 +167,18 @@ pipeline CALL_AND_CLUSTER(
 
 
 
-pipeline CELL_MUX(
+pipeline REALIGN_PIPE(
     in bam bam,
-    in string fasta,
+    in fasta fasta,
     in csv cells,
-    in int ploidy,
-    in gtf gtf,
-    in int alt_alleles_required,
-    in int ref_alleles_required,
-    in string[] comparison_bam_files,
-    in string[] comparison_bam_names,
-    in vcf.gz variants_ground_truth,
-    in string ground_truth,
-    in string input_variants,
-    in int downsample_graph,
-    in csv transcript_clusters,
-    in int qual_filter,
-    in bool call_exome_only,
-    in int call_near_exon_window,
-    in int min_mapq,
-    out tsv.gz calls,
-    out vcf.gz sc_variants,
-    out mcl clusters,
-    out png concordance_bargraph,
-    out png concordance_heatmap,
-    out csv concordance,
-    out csv pca_vs_clusters_data,
-    out png pca_vs_clusters,
-)
-{
-
-    call REFORMAT_BAM(
+){
+     call REALIGN(
         bam = self.bam,
+        max_intron_length = 2000,
         fasta = self.fasta,
         cells = self.cells,
     )
-
-    call CALL_AND_CLUSTER(
-        fasta = self.fasta,
-        ploidy = self.ploidy,
-        gtf = self.gtf,
-        bam = REFORMAT_BAM.bam,
-        reads_per_cell = REFORMAT_BAM.reads_per_cell,
-        alt_alleles_required = self.alt_alleles_required,
-        ref_alleles_required = self.ref_alleles_required,
-        comparison_bam_files = self.comparison_bam_files,
-        comparison_bam_names = self.comparison_bam_names,
-        variants_ground_truth = self.variants_ground_truth,
-        cells_ground_truth = self.ground_truth,
-        input_variants = self.input_variants,
-        downsample_graph = self.downsample_graph,
-        call_exome_only = self.call_exome_only,
-        call_near_exon_window = self.call_near_exon_window,
-        transcript_clusters = self.transcript_clusters,
-        qual_filter = self.qual_filter,
-        min_mapq = self.min_mapq,
-    )
-
-    return (
-        calls = CALL_AND_CLUSTER.calls,
-        sc_variants = CALL_AND_CLUSTER.sc_variants,
-        clusters = CALL_AND_CLUSTER.clusters,
-        concordance_bargraph = CALL_AND_CLUSTER.concordance_bargraph,
-        concordance_heatmap = CALL_AND_CLUSTER.concordance_heatmap,
-        concordance = CALL_AND_CLUSTER.concordance,
-        pca_vs_clusters = CALL_AND_CLUSTER.pca_vs_clusters,
-        pca_vs_clusters_data = CALL_AND_CLUSTER.pca_vs_clusters_data,
-    )
+    return()
 }
 
 pipeline CELL_MUX_BWA(
@@ -218,6 +201,9 @@ pipeline CELL_MUX_BWA(
     in bool call_exome_only,
     in int call_near_exon_window,
     in int min_mapq,
+    in int num_clusters,
+    in int min_clusters,
+    in int max_clusters,
     out tsv.gz calls,
     out mcl clusters,
     out vcf.gz sc_variants,
@@ -255,6 +241,9 @@ pipeline CELL_MUX_BWA(
         call_exome_only = self.call_exome_only,
         call_near_exon_window = self.call_near_exon_window,
         min_mapq = self.min_mapq,
+        num_clusters = self.num_clusters,
+        min_clusters = self.min_clusters,
+        max_clusters = self.max_clusters,
     )
 
     return (

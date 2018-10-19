@@ -30,25 +30,25 @@ stage REALIGN(
     in int end,
 )
 
-stage REFORMAT_BAM(
-    in bam bam,
-    in string fasta,
-    in csv cells,
-    out csv reads_per_cell,
-    out sam header,
-    out csv read_groups,
-    out bam bam,
-    out int no_cell_barcode,
-    out int no_cell_call,
-    out int unmapped,
-    out int mapped,
-    out int reads_total,
-    src py "stages/cell_read_group",
-) split using (
-    in string chrom,
-    in int start,
-    in int end,
-)
+#stage REFORMAT_BAM(
+#    in bam bam,
+#    in string fasta,
+#    in csv cells,
+#    out csv reads_per_cell,
+#    out sam header,
+#    out csv read_groups,
+#    out bam bam,
+#    out int no_cell_barcode,
+#    out int no_cell_call,
+#    out int unmapped,
+#    out int mapped,
+#    out int reads_total,
+#    src py "stages/cell_read_group",
+#) split using (
+#    in string chrom,
+#    in int start,
+#    in int end,
+#)
 
 stage SPLIT_N_READS(
     in bam[] bams,
@@ -99,6 +99,7 @@ stage CALL_VARIANTS(
 
 stage CLUSTER_GENOTYPES(
     in vcf.gz[] vcfs,
+    in bam bam,
     in int ploidy,
     in string fasta,
     in int ref_alleles_required,
@@ -108,6 +109,9 @@ stage CLUSTER_GENOTYPES(
     in int downsample_graph,
     in csv transcript_clusters,
     in int qual_filter,
+    in int num_clusters,
+    in int min_clusters,
+    in int max_clusters,
     out map metrics,
     out json metrics_json,
     out dot graph,

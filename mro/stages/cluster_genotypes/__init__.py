@@ -6,6 +6,9 @@ import vcf
 import pyfasta
 import json
 import random
+import numpy as np
+from sklearn.cluster import SpectralClustering
+import pandas as pd
 
 def split(args):
     chunks = []
@@ -117,7 +120,12 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                 indel = "indel" if not(len(tokens[3]) == len(tokens[4])) else "snp"
                 if len(cells) == 2:
                     allele_counts_file.write(indel + "," + str(len(cells[0]))+","+str(len(cells[1]))+"\n")
-                for (allele_index, allele_cell_list) in enumerate(cells):#[1:]: #ignore ref alleles for concordancy
+                min_allele_frequency = 1.0
+                for (allele_index, allele_cell_list) in enumerate(cells):
+                    allele_frequency = len(allele_cell_list)/float(len(cells[1-allele_index]))
+                    allele_frequency = max(0.1, allele_frequency)
+                    allele_frequency = min(0.9, allele_frequency)
+                    min_allele_frequency = min(min_allele_frequency, allele_frequency)
                     for index1, cell1 in enumerate(allele_cell_list):
                         for index2 in range(index1+1,len(allele_cell_list)):
                             cell2 = allele_cell_list[index2]
@@ -129,10 +137,11 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                                 cellb = cell1
                             edges = graph.setdefault(cella, {})
                             count = edges.setdefault(cellb, 0)
-                            if allele_index == 0:
-                                graph[cella][cellb] += 1.0/6.0
-                            else:
-                                graph[cella][cellb] += 1
+                            #if allele_index == 0:
+                            #    graph[cella][cellb] += 1.0/6.0 
+                            #else:
+                            #    graph[cella][cellb] += 1
+                            graph[cella][cellb] += 1.0 - allele_frequency
                 for index in range(len(cells)):
                     for index2 in range(index+1,len(cells)):
                         if index == index2:
@@ -145,8 +154,8 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                                 else:
                                     cella = cell2
                                     cellb = cell1
-                                if cella in graph and cellb in graph[cella]:
-                                    graph[cella][cellb] -= 1
+                                #if cella in graph and cellb in graph[cella]:
+                                #    graph[cella][cellb] -= 1.0 - min_allele_frequency
         
     iqr = sorted(reads_per_cell_counts.values())
     p25 = iqr[int(0.25*len(reads_per_cell_counts))]
@@ -206,7 +215,7 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
 
                 if ground_truth:
                     color = ground_truth_mapping[node]
-                dot.write(node[:-2]+" [shape=point, "+color+"]\n")
+                dot.write(node.replace('-','.')+" [shape=point, "+color+"]\n")
                 #dot.write("node [shape=point];\n")
 
             for node1, node2s in graph.iteritems():
@@ -217,7 +226,7 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                         continue
                     if not node2 in nodes_to_keep:
                         continue
-                    dot.write(node1[:-2]+" -- "+node2[:-2]+" [color=black, weight="+str(count)+"];\n//"+str(count)+","+str(reads_per_cell_counts[node1])+","+str(reads_per_cell_counts[node2])+"\n")
+                    dot.write(node1.replace('-','.')+" -- "+node2.replace('-','.')+" [color=black, weight="+str(count)+"];\n")
                     abc.write(node1+"\t"+node2+"\t"+str(count)+"\n")
                     if node1 in all_nodes:
                         all_nodes.remove(node1)
@@ -237,8 +246,8 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
             edge_weight_counts = {}
             for edge_weight in edge_weights:
                 if edge_weight < 5000:
-                    edge_weight_counts.setdefault(edge_weight,0)
-                    edge_weight_counts[edge_weight] += 1
+                    edge_weight_counts.setdefault(int(edge_weight),0)
+                    edge_weight_counts[int(edge_weight)] += 1
             graph_stats['edge_weight_histogram'] = edge_weight_counts
     return graph_stats
 
@@ -270,19 +279,146 @@ def join(args, outs, chunk_defs, chunk_outs):
     with open(outs.calls[:-3],'w') as calls:
         subprocess.check_call(['sort', '-k1,1', '-k2,2n', outs.calls[:-3]+"unsorted.tsv"],stdout=calls)
     metrics["graph_stats"] = make_graph(outs.calls[:-3], outs.graph, outs.graph[:-4]+".abc", args.reads_per_cell, outs.graph+"alleles.csv", args.downsample_graph, args.ground_truth)
-    subprocess.check_call(['mcl',outs.graph[:-4]+".abc",'--abc','-o',outs.clusters, '-tf', '#ceilnb(300),#knn(200)'])
+    #subprocess.check_call(['mcl',outs.graph[:-4]+".abc",'--abc','-o',outs.clusters, '-tf', '#ceilnb(300),#knn(200)'])
+    adjacency_matrix, edges, edges_by_node, node_list, node_index = compute_adjacency_matrix(outs.graph[:-4]+".abc")
+    clustering_labels = None
+    best_score = -10000
+    if args.num_clusters == None:
+        min_clusters = args.min_clusters
+        max_clusters = args.max_clusters
+        if min_clusters == None:
+            min_clusters = 2
+        if max_clusters == None:
+            max_clusters = 20
+        for num_clusters in range(min_clusters, max_clusters+1):
+            spectral_clustering = SpectralClustering(num_clusters, affinity='precomputed', n_init=1000, assign_labels='discretize')
+            spectral_clustering.fit(adjacency_matrix)
+            #print "clustering k = "+str(i)
+            score = clustering_score(edges,spectral_clustering.labels_,node_index)
+            if score >= best_score:
+                best_score = score
+                clustering_labels = spectral_clustering.labels_  
+            #score2 = sil_score(edges_by_node, sc.labels_,node_index)
+            #print "\t"+str(score)+"\t"+str(score2)
+    else:
+        spectral_clustering = SpectralClustering(args.num_clusters, affinity='precomputed', n_init=1000, assign_labels='discretize')
+        spectral_clustering.fit(adjacency_matrix)
+        clustering_labels = spectral_clustering.labels_
 
+    create_cluster_output(outs.clusters, clustering_labels, node_index)
     outs.metrics = metrics
     subprocess.check_call(['bgzip',outs.calls[:-3]])
     subprocess.check_call(['tabix','-p', 'vcf',outs.calls])    
     max_clusters = 10
-    clusters, cluster_names, cell_clusters = load_clustering(outs.clusters, max_clusters)
+    clusters, cluster_names, cluster_total, cell_clusters = load_clustering(outs.clusters, max_clusters)
+    #clusters, cluster_names, cell_clusters = load_clustering(outs.clusters, max_clusters)
     if not args.ground_truth == None: 
-        cluster_concordance(args.ground_truth, outs.concordance, outs.concordance_barchart, outs.concordance_heatmap, max_clusters, clusters, cluster_names, cell_clusters)
-    if not args.transcription_pca is None:
-        write_pca_colored_by_cluster(args.transcription_pca, outs.pca_vs_clusters, outs.pca_vs_clusters_data, cell_clusters)
+        cluster_concordance(args.ground_truth, outs.concordance, outs.concordance_bargraph, outs.concordance_heatmap, max_clusters, clusters, cluster_names, cell_clusters, cluster_total)
+    #if not args.transcription_pca is None:
+    #    write_pca_colored_by_cluster(args.transcription_pca, outs.pca_vs_clusters, outs.pca_vs_clusters_data, cell_clusters)
     with open(outs.metrics_json,'w') as mets:
         json.dump(metrics, mets)
+
+
+import operator 
+def create_cluster_output(out, clustering_labels, node_index):
+    clusters_to_nodes = {}
+    for node, index in node_index.iteritems():
+        cluster = clustering_labels[index]
+        clusters_to_nodes.setdefault(cluster, [])
+        clusters_to_nodes[cluster].append(node)
+    with open(out,'w') as outwrite:
+        for cluster, node_list in sorted(clusters_to_nodes.items(), key= lambda kv: len(kv[1]),reverse=True):
+            outwrite.write("\t".join(node_list)+"\n")
+
+def clustering_score(edges,labels,node_index):
+    weight_col = []
+    cluster1_col = []
+    cluster2_col = []
+    clusters = set()
+    cluster_num_nodes = {}
+    for cluster in labels:
+        cluster_num_nodes.setdefault(cluster,0)
+        cluster_num_nodes[cluster] += 1
+    for (node1, node2), weight in edges.iteritems():
+        node1_cluster = labels[node_index[node1]]
+        node2_cluster = labels[node_index[node2]]
+        cluster1_col.append(node1_cluster)
+        cluster2_col.append(node2_cluster)
+        weight_col.append(weight)
+        clusters.add(node1_cluster)
+        clusters.add(node2_cluster)
+    clusters = [c for c in clusters]
+    df = pd.DataFrame({'weight':weight_col,'c1':cluster1_col,'c2':cluster2_col})
+    intra_cluster_weights = {}
+    for cluster in clusters:
+        df2 = df[np.logical_and(df.c1 == cluster, df.c2 == cluster)]
+        total = np.sum(df2.weight)
+        denom = cluster_num_nodes[cluster]
+        denom *= denom-1
+        denom /= 2
+        #print "\tintra cluster cluster, total, denom, avg, cluster_size"
+        #print "\t"+str(cluster)+"\t"+str(total)+"\t"+str(denom)+"\t"+str(total/float(max(denom,1.0)))+"\t"+str(cluster_num_nodes[cluster])
+        mean_weight = total/float(max(denom,1.0))
+        intra_cluster_weights[cluster] = mean_weight
+    inter_cluster_weights = {}
+    for index1, cluster1 in enumerate(clusters):
+        for cluster2 in clusters[index1+1:]:
+            df2 = df[np.logical_or(np.logical_and(df.c1 == cluster1, df.c2 == cluster2),
+                                np.logical_and(df.c1 == cluster2, df.c2 == cluster1))]
+            #df2 = df[np.logical_or(np.logical_and(df.c1 == cluster1, np.logical_not(df.c2 == cluster1)),
+            #                   np.logical_and(np.logical_not(df.c1 == cluster1), df.c2 == cluster1))]
+            total = np.sum(df2.weight)
+            #denom = cluster_num_nodes[cluster1]*np.sum([cluster_num_nodes[c] for c in clusters if not c == cluster1])
+            denom = cluster_num_nodes[cluster1]*cluster_num_nodes[cluster2]
+            #print "\t\tinter cluster cluster1, cluster2, total, denom, avg, cluster_size"
+            #print "\t\t"+str(cluster1)+"\t"+str(cluster2)+"\t"+str(total)+"\t"+str(denom)+"\t"+str(total/float(max(denom,1.0)))+"\t"+str(cluster_num_nodes[cluster2])
+            mean_weight = total/float(max(denom,1.0))
+            inter_cluster_weights.setdefault(cluster1,[])
+            inter_cluster_weights.setdefault(cluster2,[])
+            inter_cluster_weights[cluster1].append(mean_weight)
+            inter_cluster_weights[cluster2].append(mean_weight)
+    cluster_scores = {}
+    for cluster in clusters:
+        cluster_scores[cluster] = (intra_cluster_weights[cluster]-np.max(inter_cluster_weights[cluster])) / max(1.0,intra_cluster_weights[cluster])
+    #print cluster_scores
+    total_score = 0.0#1000000
+    denom = 0.0
+    for cluster, score in cluster_scores.iteritems():
+        total_score += score*cluster_num_nodes[cluster]#score#min(score,total_score) #* cluster_num_nodes[cluster]
+        #print (score, cluster_num_nodes[cluster], score*cluster_num_nodes[cluster])
+        denom += cluster_num_nodes[cluster]
+    total_score /= denom
+    #score = np.mean([x for _, x in cluster_scores.iteritems()])
+    #print score
+    return total_score
+
+def compute_adjacency_matrix(abc_graph):
+    edges = {}
+    edges_by_node = {}
+    nodes = set()
+    with open(abc_graph) as graph:
+        for line in graph:
+            tokens = line.strip().split("\t")
+            weight = float(tokens[2])
+            node1 = tokens[0]
+            node2 = tokens[1]
+            edges[(node1,node2)] = weight
+            edges_by_node.setdefault(node1,[])
+            edges_by_node.setdefault(node2,[])
+            edges_by_node[node1].append((node2,weight))
+            edges_by_node[node2].append((node1,weight))
+            nodes.add(tokens[0])
+            nodes.add(tokens[1])
+    node_index = {node:index for (index, node) in enumerate(nodes)}
+    node_list = [node for node in nodes]
+    adj_mat = np.zeros((len(node_index), len(node_index)))
+    for (node1, node2), weight in edges.iteritems():
+        node1_index = node_index[node1]
+        node2_index = node_index[node2]
+        adj_mat[node1_index][node2_index] = weight
+        adj_mat[node2_index][node1_index] = weight
+    return adj_mat, edges, edges_by_node, node_list, node_index
 
 def write_pca_colored_by_cluster(pca, pca_vs_clusters, pca_vs_clusters_data, cell_clusters):
     with open(pca) as projection:
@@ -295,23 +431,23 @@ def write_pca_colored_by_cluster(pca, pca_vs_clusters, pca_vs_clusters_data, cel
                 cluster = cell_clusters[cell]
                 out.write(line.strip()+","+str(cluster)+"\n")
     df = pd.DataFrame(pca_vs_clusters_data)
-    pca_graph = ggplot(df)+geom_point(aes(x='PC-1',y='PC-2',color='cluster'))
-    pca_graph.write(pca_vs_clusters)
+    #pca_graph = ggplot(df)+geom_point(aes(x='PC-1',y='PC-2',color='cluster'))
+    #pca_graph.write(pca_vs_clusters)
 
-def cluster_concordance(ground_truth, concordance_out, barchart, heatmap, max_clusters, clusters, cluster_names, cell_clusters):
+def cluster_concordance(ground_truth, concordance_out, barchart, heatmap, max_clusters, clusters, cluster_names, cell_clusters, cluster_total):
     cluster_assignment_counts, assignment_names, assignment_total = \
     compare_ground_truth(ground_truth, cluster_names, cell_clusters, max_clusters)
     with open(concordance_out, 'w') as concordance:
         concordance.write("ground_truth,cluster,count,assignment_total,cluster_total\n")
         for cluster, assignment_counts in cluster_assignment_counts.iteritems():
             for assignment, count in assignment_counts.iteritems():
-                out.write(str(assignment)+","+str(cluster)+","+str(count)+","+str(assignment_total[assignment])+","+str(cluster_total[cluster])+"\n")
+                concordance.write(str(assignment)+","+str(cluster)+","+str(count)+","+str(assignment_total[assignment])+","+str(cluster_total[cluster])+"\n")
     df = pd.read_csv(concordance_out)
-    barchart_obj = ggplot(df)+geom_bar(aes(x='ground_truth',y='count',color='cluster'),position='dodge',stat='identity')
-    barchard_obj.save(barchart)
-    df['count/cluster_total'] = df.count/df.cluster_total
-    heatmap_obj = ggplot(df)+geom_tile(aes(x='ground_truth',y='cluster',fill='count/cluster_total'))
-    heatmap_obj.save(heatmap)
+    #barchart_obj = ggplot(df)+geom_bar(aes(x='ground_truth',y='count',color='cluster'),position='dodge',stat='identity')
+    #barchart_obj.save(barchart)
+    df['count/cluster_total'] = df['count']/df.cluster_total
+    #heatmap_obj = ggplot(df)+geom_tile(aes(x='ground_truth',y='cluster',fill='count/cluster_total'))
+    #heatmap_obj.save(heatmap)
 
 def compare_ground_truth(ground_truth, cluster_names, cell_clusters, max_clusters):
     assignment_names = set()
@@ -323,10 +459,13 @@ def compare_ground_truth(ground_truth, cluster_names, cell_clusters, max_cluster
             tokens = line.strip().split()
             assignment = tokens[6]
             cell = tokens[0]
+            if not cell in cell_clusters:
+                continue
             cluster = cell_clusters[cell]
             if cluster > max_clusters:
                 cluster = "unknown_cluster"
-            cluster_assignment_counts.setdefault(cluster,[])
+            cluster_assignment_counts.setdefault(cluster,{})
+            cluster_assignment_counts[cluster].setdefault(assignment, 0)
             cluster_assignment_counts[cluster][assignment] += 1
             assignment_names.add(assignment)
             assignment_total.setdefault(assignment,0)
@@ -334,7 +473,7 @@ def compare_ground_truth(ground_truth, cluster_names, cell_clusters, max_cluster
         for cluster in cluster_names:
             for assignment in assignment_names:
                 cluster_assignment_counts.setdefault(cluster,{})
-                cluster_assignment_counts[cluster].setdefault(assingment,0)
+                cluster_assignment_counts[cluster].setdefault(assignment,0)
     return cluster_assignment_counts, assignment_names, assignment_total
             
 
@@ -342,18 +481,19 @@ def load_clustering(mcl_file, max_clusters):
     cluster_names = set()
     clusters = {}
     cluster_total = {}
+    cell_clusters = {}
     with open(mcl_file) as mcl:
         for index, line in enumerate(mcl):
             clusters[index] = set()
-            for cell in line.strip().split:
+            for cell in line.strip().split():
                 clusters[index].add(cell)
                 if index <= max_clusters:
                     cluster_names.add(index)
                     cluster = index
                 else:
                     cluster = "unknown_cluster"
-                    clsuter_names.add(cluster)
+                    cluster_names.add(cluster)
                 cell_clusters[cell] = cluster
-                clusters_total.setdefault(cluster,0)
+                cluster_total.setdefault(cluster,0)
                 cluster_total[cluster] += 1
-    return clusters, cluster_names, cluster_total
+    return clusters, cluster_names, cluster_total, cell_clusters

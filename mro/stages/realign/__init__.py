@@ -23,7 +23,6 @@ def main(args, outs):
     
     cells = set()
     with open(args.cells) as cellsfile:
-        cellsfile.readline()
         for line in cellsfile:
             barcode = line.strip().split(",")[0]
             cells.add(barcode)
@@ -60,7 +59,8 @@ def main(args, outs):
     print "bwa running"
     with open(outs.bam+"tmp.bam",'w') as tmpbam:
         #ps = subprocess.Popen(['bwa','mem',args.fasta,outs.bam+".fq"], stdout=subprocess.PIPE)
-        command = ['minimap2', '-ax', 'splice', '-G'+str(args.max_intron_length/1000)+'k', '-k','21','-w','11','--sr','-A2','-B8','-O12,32', '-E2,1', '-r200', '-p.5', '-N20', '-f1000,5000', '-n2', '-m20', '-s40', '-g2000', '-2K50m', '--secondary=no',args.fasta,outs.bam+".fq"]
+        command = ['minimap2', '-ax', 'splice', '-t','1','-G'+str(args.max_intron_length/1000)+'k', '-k','21','-w','11','--sr','-A2','-B8','-O12,32', '-E2,1', '-r200', '-p.5', '-N20', '-f1000,5000', '-n2', '-m20', '-s40', '-g2000', '-2K50m', '--secondary=no',args.fasta,outs.bam+".fq"]
+        #command = ['hisat2','-x',args.fasta[:-3],'-U',outs.bam+".fq"]
         print " ".join(command)
         ps = subprocess.Popen(command,stdout=subprocess.PIPE)
         subprocess.check_call(['samtools','view','-bS'],stdin=ps.stdout,stdout=tmpbam)
