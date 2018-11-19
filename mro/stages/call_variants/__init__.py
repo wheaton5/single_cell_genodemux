@@ -7,7 +7,7 @@ def split(args):
     fasta = pyfasta.Fasta(args.fasta)
 
     for key in fasta.keys():
-        chunk_size = 10000000
+        chunk_size = 40000000
         start = 0
         while start < len(fasta[key]):
             end = min(len(fasta[key]), start+chunk_size)

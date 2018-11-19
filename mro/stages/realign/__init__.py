@@ -12,9 +12,9 @@ def split(args):
         start = 0
         while start < len(fasta[chrom]):
             end = min(len(fasta[chrom]), start+chunk_size)
-            chunks.append({'chrom':chrom, 'start':start, 'end':end ,'__mem_gb':8,'__threads':1})
+            chunks.append({'chrom':chrom, 'start':start, 'end':end ,'__mem_gb':24,'__threads':1})
             start += chunk_size
-    return {'chunks':chunks,'join':{'__mem_gb':8}}
+    return {'chunks':chunks,'join':{'__mem_gb':16}}
 
 
 def main(args, outs):
@@ -63,7 +63,7 @@ def main(args, outs):
         #command = ['hisat2','-x',args.fasta[:-3],'-U',outs.bam+".fq"]
         print " ".join(command)
         ps = subprocess.Popen(command,stdout=subprocess.PIPE)
-        subprocess.check_call(['samtools','view','-bS'],stdin=ps.stdout,stdout=tmpbam)
+        subprocess.check_call(['samtools','view','-1','-S'],stdin=ps.stdout,stdout=tmpbam)
         ps.wait()
     print "bwa done"
     bamout = pysam.AlignmentFile(outs.bam,'wb', template=bam)

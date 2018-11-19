@@ -137,11 +137,11 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                                 cellb = cell1
                             edges = graph.setdefault(cella, {})
                             count = edges.setdefault(cellb, 0)
-                            #if allele_index == 0:
-                            #    graph[cella][cellb] += 1.0/6.0 
-                            #else:
-                            #    graph[cella][cellb] += 1
-                            graph[cella][cellb] += 1.0 - allele_frequency
+                            if allele_index == 0:
+                                graph[cella][cellb] += 1.0/6.0 
+                            else:
+                                graph[cella][cellb] += 1
+                            #graph[cella][cellb] += 1.0 - allele_frequency
                 for index in range(len(cells)):
                     for index2 in range(index+1,len(cells)):
                         if index == index2:
@@ -156,6 +156,7 @@ def make_graph(calls_fn, dot_out, abc_out, reads_per_cell, allele_counts_fn, dow
                                     cellb = cell1
                                 #if cella in graph and cellb in graph[cella]:
                                 #    graph[cella][cellb] -= 1.0 - min_allele_frequency
+                                graph[cella][cellb] -= 1.0/12.0
         
     iqr = sorted(reads_per_cell_counts.values())
     p25 = iqr[int(0.25*len(reads_per_cell_counts))]
